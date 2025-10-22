@@ -454,7 +454,7 @@ class PlainServer:
 # =========================================================
 # 比較実験関数
 # =========================================================
-def run_federated_learning_comparison(num_clients=5, num_rounds=3):
+def run_federated_learning_comparison(num_clients=10, num_rounds=10):
     """
     平文とCKKS暗号化の連合学習を実行し、精度と時間を比較
     """
@@ -565,7 +565,7 @@ def run_federated_learning_comparison(num_clients=5, num_rounds=3):
     return results
 
 
-def plot_comparison_results(results, num_rounds):
+def plot_comparison_results(results, num_rounds, num_clients):
     """
     比較結果をグラフ化して保存
     """
@@ -622,7 +622,7 @@ def plot_comparison_results(results, num_rounds):
     plt.tight_layout()
 
     # グラフを保存
-    output_file = 'federated_learning_comparison.png'
+    output_file = f'federated_learning_comparison_clients{num_clients}_rounds{num_rounds}.png'
     plt.savefig(output_file, dpi=150, bbox_inches='tight')
     print(f"\n📊 Comparison graph saved to: {output_file}")
 
@@ -684,8 +684,8 @@ def main():
     """
     比較実験のメイン関数
     """
-    num_clients = 5
-    num_rounds = 3
+    num_clients = 10
+    num_rounds = 10
 
     # 比較実験を実行
     results = run_federated_learning_comparison(num_clients=num_clients, num_rounds=num_rounds)
@@ -694,7 +694,7 @@ def main():
     print_comparison_summary(results, num_rounds)
 
     # グラフを作成
-    plot_comparison_results(results, num_rounds)
+    plot_comparison_results(results, num_rounds, num_clients)
 
     print("\n✅ All comparisons completed!")
 
