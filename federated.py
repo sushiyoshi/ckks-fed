@@ -22,6 +22,7 @@ from math import log2, ceil
 import matplotlib.pyplot as plt
 import matplotlib
 matplotlib.use('Agg')  # GUIなし環境対応
+import argparse
 
 # [OPENFHE-CKKS] 追加
 from openfhe import *
@@ -198,10 +199,19 @@ class NeuralNetwork(nn.Module):
     def __init__(self, input_size=3, output_size=2):
         super(NeuralNetwork, self).__init__()
         self.fc = nn.Linear(input_size, output_size)
+        # 初期重みを固定値で設定（次元に対応）
         with torch.no_grad():
-            self.fc.weight.data = torch.tensor([[0.1, 0.2, 0.3],
-                                                [0.4, 0.5, 0.6]], dtype=torch.float32)
-            self.fc.bias.data = torch.tensor([0.1, 0.2], dtype=torch.float32)
+            # 重み行列: output_size x input_size
+            weight_init = torch.zeros(output_size, input_size, dtype=torch.float32)
+            for i in range(output_size):
+                for j in range(input_size):
+                    weight_init[i, j] = 0.1 * (i * input_size + j + 1)
+            self.fc.weight.data = weight_init
+            # バイアス: output_size
+            bias_init = torch.zeros(output_size, dtype=torch.float32)
+            for i in range(output_size):
+                bias_init[i] = 0.1 * (i + 1)
+            self.fc.bias.data = bias_init
 
     def forward(self, x):
         return self.fc(x)
@@ -284,15 +294,25 @@ class LocalTrainer:
         self.model.load_state_dict(weights)
 
 
-def create_simple_data(batch_size, num_samples=100, seed=None):
+def create_simple_data(batch_size, num_samples=100, input_size=3, seed=None):
     """
     線形分離可能な簡易データを生成（説明・検証用）
-    ルール: x1 + x2 - x3 > 0 なら 1、それ以外は 0
+    ルール: x_1 - x_2 + x_3 - x_4 + ... ± x_n > 0 なら 1、それ以外は 0
+    奇数インデックスは+、偶数インデックスは-の符号を持つ
     """
     if seed is not None:
         np.random.seed(seed)
-    features = np.random.randn(num_samples, 3).astype(np.float32)
-    labels = ((features[:, 0] + features[:, 1] - features[:, 2]) > 0).astype(np.int64)
+    features = np.random.randn(num_samples, input_size).astype(np.float32)
+
+    # 交互に符号を変えて和を計算: x_1 - x_2 + x_3 - x_4 + ...
+    weighted_sum = np.zeros(num_samples, dtype=np.float32)
+    for i in range(input_size):
+        if i % 2 == 0:  # 偶数インデックス(0,2,4,...) は +
+            weighted_sum += features[:, i]
+        else:  # 奇数インデックス(1,3,5,...) は -
+            weighted_sum -= features[:, i]
+
+    labels = (weighted_sum > 0).astype(np.int64)
     dataset = CustomDataset(features, labels)
     return DataLoader(dataset, batch_size=batch_size, shuffle=True)
 
@@ -304,12 +324,12 @@ class Client:
       - 学習前後の精度を出力
       - 学習後の重みをサーバへ返す
     """
-    def __init__(self, client_id, data_seed=None):
+    def __init__(self, client_id, input_size=3, output_size=2, data_seed=None):
         self.client_id = client_id
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-        self.model = NeuralNetwork(input_size=3, output_size=2).to(self.device)
-        self.train_loader = create_simple_data(batch_size=16, num_samples=100, seed=data_seed)
-        self.test_loader = create_simple_data(batch_size=16, num_samples=50, seed=data_seed+1000 if data_seed else None)
+        self.model = NeuralNetwork(input_size=input_size, output_size=output_size).to(self.device)
+        self.train_loader = create_simple_data(batch_size=16, num_samples=100, input_size=input_size, seed=data_seed)
+        self.test_loader = create_simple_data(batch_size=16, num_samples=50, input_size=input_size, seed=data_seed+1000 if data_seed else None)
         self.optimizer = optim.SGD(self.model.parameters(), lr=0.01)  # 低LRで安定化
         self.criterion = nn.CrossEntropyLoss()
         self.trainer = LocalTrainer(self.model, self.train_loader, self.optimizer, self.criterion, self.device)
@@ -341,10 +361,10 @@ class FHEServer:
       - グローバルモデルの保持と評価
       - CKKS 集約（FHEModelAggregator: CKKS 版）を呼び出し
     """
-    def __init__(self, num_clients=5):
+    def __init__(self, num_clients=5, input_size=3, output_size=2):
         self.num_clients = num_clients
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-        self.global_model = NeuralNetwork(input_size=3, output_size=2).to(self.device)
+        self.global_model = NeuralNetwork(input_size=input_size, output_size=output_size).to(self.device)
 
         # [REPLACED WITH OPENFHE-CKKS] ここで CKKS 版の Aggregator を使用
         self.fhe_aggregator = FHEModelAggregator(
@@ -354,7 +374,7 @@ class FHEServer:
             max_value=50        # 同上
         )
 
-        self.test_loader = create_simple_data(batch_size=32, num_samples=200, seed=9999)
+        self.test_loader = create_simple_data(batch_size=32, num_samples=200, input_size=input_size, seed=9999)
         self.criterion = nn.CrossEntropyLoss()
 
     def evaluate_global_model(self):
@@ -402,11 +422,11 @@ class PlainServer:
       - グローバルモデルの保持と評価
       - 平文でのモデル集約（単純平均）
     """
-    def __init__(self, num_clients=5):
+    def __init__(self, num_clients=5, input_size=3, output_size=2):
         self.num_clients = num_clients
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-        self.global_model = NeuralNetwork(input_size=3, output_size=2).to(self.device)
-        self.test_loader = create_simple_data(batch_size=32, num_samples=200, seed=9999)
+        self.global_model = NeuralNetwork(input_size=input_size, output_size=output_size).to(self.device)
+        self.test_loader = create_simple_data(batch_size=32, num_samples=200, input_size=input_size, seed=9999)
         self.criterion = nn.CrossEntropyLoss()
 
     def evaluate_global_model(self):
@@ -454,12 +474,13 @@ class PlainServer:
 # =========================================================
 # 比較実験関数
 # =========================================================
-def run_federated_learning_comparison(num_clients=10, num_rounds=10):
+def run_federated_learning_comparison(num_clients=10, num_rounds=10, input_size=3, output_size=2):
     """
     平文とCKKS暗号化の連合学習を実行し、精度と時間を比較
     """
     print("="*80)
     print("🔬 FEDERATED LEARNING COMPARISON: Plain vs CKKS Encrypted")
+    print(f"   Input Size: {input_size}, Output Size: {output_size}")
     print("="*80)
 
     # 結果格納用
@@ -475,8 +496,8 @@ def run_federated_learning_comparison(num_clients=10, num_rounds=10):
     print("📊 PLAIN FEDERATED LEARNING")
     print("="*80)
 
-    plain_server = PlainServer(num_clients=num_clients)
-    plain_clients = [Client(client_id=i+1, data_seed=i*100) for i in range(num_clients)]
+    plain_server = PlainServer(num_clients=num_clients, input_size=input_size, output_size=output_size)
+    plain_clients = [Client(client_id=i+1, input_size=input_size, output_size=output_size, data_seed=i*100) for i in range(num_clients)]
 
     print("\nInitial Global Model Evaluation (Plain):")
     initial_accuracy_plain, _ = plain_server.evaluate_global_model()
@@ -520,14 +541,14 @@ def run_federated_learning_comparison(num_clients=10, num_rounds=10):
 
     # 鍵生成時間を計測
     key_gen_start = time.time()
-    ckks_server = FHEServer(num_clients=num_clients)
+    ckks_server = FHEServer(num_clients=num_clients, input_size=input_size, output_size=output_size)
     key_gen_end = time.time()
     key_gen_time = key_gen_end - key_gen_start
     results['ckks']['key_gen_time'] = key_gen_time
 
     print(f"🔑 Key generation time: {key_gen_time:.2f} seconds")
 
-    ckks_clients = [Client(client_id=i+1, data_seed=i*100) for i in range(num_clients)]
+    ckks_clients = [Client(client_id=i+1, input_size=input_size, output_size=output_size, data_seed=i*100) for i in range(num_clients)]
 
     print("\nInitial Global Model Evaluation (CKKS):")
     initial_accuracy_ckks, _ = ckks_server.evaluate_global_model()
@@ -684,17 +705,46 @@ def main():
     """
     比較実験のメイン関数
     """
-    num_clients = 10
-    num_rounds = 10
+    # コマンドライン引数のパース
+    parser = argparse.ArgumentParser(
+        description='Federated Learning Comparison: Plain vs CKKS Encrypted',
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter
+    )
+    parser.add_argument('--input-size', type=int, default=3,
+                        help='Number of input features (dimension of input data)')
+    parser.add_argument('--output-size', type=int, default=2,
+                        help='Number of output classes')
+    parser.add_argument('--num-clients', type=int, default=10,
+                        help='Number of clients participating in federated learning')
+    parser.add_argument('--num-rounds', type=int, default=10,
+                        help='Number of federated learning rounds')
+
+    args = parser.parse_args()
+
+    # パラメータ表示
+    print("\n" + "="*80)
+    print("📋 EXPERIMENT CONFIGURATION")
+    print("="*80)
+    print(f"  Input Size:    {args.input_size}")
+    print(f"  Output Size:   {args.output_size}")
+    print(f"  Num Clients:   {args.num_clients}")
+    print(f"  Num Rounds:    {args.num_rounds}")
+    print(f"  Data Rule:     x_1 - x_2 + x_3 - x_4 + ... ± x_{args.input_size} > 0")
+    print("="*80 + "\n")
 
     # 比較実験を実行
-    results = run_federated_learning_comparison(num_clients=num_clients, num_rounds=num_rounds)
+    results = run_federated_learning_comparison(
+        num_clients=args.num_clients,
+        num_rounds=args.num_rounds,
+        input_size=args.input_size,
+        output_size=args.output_size
+    )
 
     # 結果のサマリーを出力
-    print_comparison_summary(results, num_rounds)
+    print_comparison_summary(results, args.num_rounds)
 
     # グラフを作成
-    plot_comparison_results(results, num_rounds, num_clients)
+    plot_comparison_results(results, args.num_rounds, args.num_clients)
 
     print("\n✅ All comparisons completed!")
 
