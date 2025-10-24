@@ -1,29 +1,27 @@
 # CKKS Federated Learning
 
-OpenFHE CKKSスキームを使用した完全準同型暗号による連合学習の実装。
+OpenFHE CKKSによる連合学習実装
 
-## 環境構築
+## セットアップ
 
 ```bash
-# 仮想環境の作成
 python -m venv .
-
-# 仮想環境の有効化
 source bin/activate
-
-# 依存パッケージのインストール
 pip install -r requirements.txt
 ```
 
-## 実行例
+## 実行
 
 ```bash
-# CKKS基本サンプル
-python ckks_sample.py
-
-# ブートストラップサンプル
-python simple_ckks_bootstrap.py
-
-# 連合学習（平文とCKKS暗号化の比較）
+# デフォルト設定で実行
 python federated.py
+
+# 引数を指定して実行
+python federated.py --input-size 5 --num-clients 20 --num-rounds 15
 ```
+
+### 引数
+
+- `--input-size`: 入力特徴量の数（デフォルト: 3）
+- `--num-clients`: クライアント数（デフォルト: 10）
+- `--num-rounds`: 学習ラウンド数（デフォルト: 10）
